@@ -534,6 +534,9 @@ class Attr {
   // Set to true if this attribute meaningful when applied to or inherited
   // in a class template definition.
   bit MeaningfulToClassTemplateDefinition = 0;
+  // Set to true if provides a custom implementation of the printPretty
+  // function.
+  bit HasCustomPrintPretty = 0;
   // Set to true if this attribute can be used with '#pragma clang attribute'.
   // By default, an attribute is supported by the '#pragma clang attribute'
   // only when:
@@ -3604,7 +3607,8 @@ def OMPDeclareTargetDecl : InheritableAttr {
     EnumArgument<"DevType", "DevTypeTy",
                  [ "host", "nohost", "any" ],
                  [ "DT_Host", "DT_NoHost", "DT_Any" ]>,
-    UnsignedArgument<"Level">
+    UnsignedArgument<"Level">,
+    BoolArgument<"IsOpenACCTranslation">
   ];
   let AdditionalMembers = [{
     void printPrettyPragma(raw_ostream &OS, const PrintingPolicy &Policy) const;
@@ -3614,6 +3618,7 @@ def OMPDeclareTargetDecl : InheritableAttr {
     static llvm::Optional<DevTypeTy> getDeviceType(const ValueDecl *VD);
     static llvm::Optional<SourceLocation> getLocation(const ValueDecl *VD);
   }];
+  let HasCustomPrintPretty = 1;
 }
 
 def OMPAllocateDecl : InheritableAttr {
@@ -3657,6 +3662,19 @@ def OMPDeclareVariant : InheritableAttr {
     void printPrettyPragma(raw_ostream & OS, const PrintingPolicy &Policy)
         const;
   }];
+}
+
+def ACCRoutineDecl : InheritableAttr {
+  let Spellings = [Pragma<"acc", "routine">];
+  let SemaHandler = 0;
+  let Subjects = SubjectList<[Function]>;
+  let Args = [
+    EnumArgument<"Partitioning", "PartitioningTy",
+                 [ "seq" ],
+                 [ "Seq" ]>
+  ];
+  let Documentation = [Undocumented];
+  let HasCustomPrintPretty = 1;
 }
 
 def Assumption : InheritableAttr {

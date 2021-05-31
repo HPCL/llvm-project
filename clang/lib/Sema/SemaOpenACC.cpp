@@ -393,9 +393,20 @@ public:
     return Stack.empty() ? ACCD_unknown : Stack.back().EffectiveDKind;
   }
 
-  /// Returns the real directive for construct enclosing currently analyzed
-  /// real directive or returns ACCD_unknown if none.  In the former case only,
-  /// set ParentLoc as the returned directive's location.
+  /// Returns the real directive for the construct lexically enclosing the
+  /// currently analyzed real directive, or returns ACCD_unknown if none.  In
+  /// the former case only, set ParentLoc as the returned directive's location.
+  ///
+  /// If the currently analyzed real directive appears within a definition, any
+  /// directive appearing outside the definition is not considered to lexically
+  /// enclose it and thus is never returned.  For example, if a loop directive
+  /// appears within a function definition and the routine directive is next on
+  /// the stack, the routine directive is not returned as the parent of the loop
+  /// directive, which is an orphaned loop directive, as defined in the OpenACC
+  /// spec.  Instead, the routine directive is attribute on the function just as
+  /// it would be if it appeared on a separate declaration of the function.  In
+  /// contrast, if there are two successive routine directives (at file scope),
+  /// the first is considered to lexically enclose the second.
   OpenACCDirectiveKind getRealParentDirective(SourceLocation &ParentLoc) const {
     // Find real directive.
     auto I = Stack.rbegin();
@@ -409,6 +420,10 @@ public:
       return ACCD_unknown;
     while (I->RealDKind == ACCD_unknown)
       I = std::next(I);
+    // Routine directives can only appear at file scope.
+    if (I->RealDKind == ACCD_routine &&
+        !SemaRef.getCurLexicalContext()->isFileContext())
+      return ACCD_unknown;
     ParentLoc = I->ConstructLoc;
     return I->RealDKind;
   }
@@ -556,8 +571,9 @@ void Sema::InitOpenACCDirectiveStack() {
 
 void Sema::DestroyOpenACCDirectiveStack() { delete DirStack; }
 
-void Sema::StartOpenACCDABlock(OpenACCDirectiveKind RealDKind,
-                               SourceLocation Loc) {
+bool Sema::StartOpenACCDirectiveAndAssociate(OpenACCDirectiveKind RealDKind,
+                                             SourceLocation StartLoc) {
+  // Push onto the directive stack.
   switch (RealDKind) {
   case ACCD_update:
   case ACCD_enter_data:
@@ -565,17 +581,42 @@ void Sema::StartOpenACCDABlock(OpenACCDirectiveKind RealDKind,
   case ACCD_data:
   case ACCD_parallel:
   case ACCD_loop:
-    DirStack->push(RealDKind, RealDKind, Loc);
+  case ACCD_routine:
+    DirStack->push(RealDKind, RealDKind, StartLoc);
     break;
   case ACCD_parallel_loop:
-    DirStack->push(RealDKind, ACCD_parallel, Loc);
-    DirStack->push(ACCD_unknown, ACCD_loop, Loc);
+    DirStack->push(RealDKind, ACCD_parallel, StartLoc);
+    DirStack->push(ACCD_unknown, ACCD_loop, StartLoc);
     break;
   case ACCD_unknown:
-    llvm_unreachable("expected acc directive");
+    llvm_unreachable("expected OpenACC directive");
   }
   PushExpressionEvaluationContext(
       ExpressionEvaluationContext::PotentiallyEvaluated);
+
+  // Check directive nesting.
+  //
+  // Directives that should not appear within a function attributed with a
+  // routine directive are not diagnosed here.  getRealParentDirective does not
+  // identify that as a parenting relationship.  That's fine as we cannot here
+  // detect cases where the routine directive actually appears on a separate
+  // (possibly later) prototype of the function.
+  SourceLocation ParentLoc;
+  OpenACCDirectiveKind ParentDKind =
+      DirStack->getRealParentDirective(ParentLoc);
+  if (!isAllowedParentForDirective(RealDKind, ParentDKind)) {
+    if (ParentDKind == ACCD_unknown)
+      Diag(StartLoc, diag::err_acc_orphaned_directive)
+          << getOpenACCName(RealDKind);
+    else {
+      Diag(StartLoc, diag::err_acc_directive_bad_nesting)
+          << getOpenACCName(ParentDKind) << getOpenACCName(RealDKind);
+      Diag(ParentLoc, diag::note_acc_enclosing_directive)
+          << getOpenACCName(ParentDKind);
+    }
+    return true;
+  }
+  return false;
 }
 
 void Sema::StartOpenACCClause(OpenACCClauseKind K) {
@@ -662,7 +703,7 @@ ACCClause *Sema::ActOnOpenACCVarListClause(
 void Sema::EndOpenACCClause() {
 }
 
-void Sema::EndOpenACCDABlock() {
+void Sema::EndOpenACCDirectiveAndAssociate() {
   // For a combined directive, the first DirStack->pop() happens after the
   // inner effective directive is "acted upon" (AST node is constructed), so
   // this is the second DirStack->pop(), which happens after the entire
@@ -676,6 +717,48 @@ void Sema::EndOpenACCDABlock() {
 }
 
 namespace {
+// Checks for various errors within functions attributed with the OpenACC
+// routine directive.
+class RoutineChecker : public StmtVisitor<RoutineChecker> {
+private:
+  Sema &SemaRef;
+  FunctionDecl *FD;
+  ACCRoutineDeclAttr *Attr;
+public:
+  void VisitACCExecutableDirective(ACCExecutableDirective *D) {
+    // Supporting a directive within a function attributed with a routine
+    // directive is like supporting it within a parallel directive as the
+    // function is meant to be callable here.  We don't support any such cases.
+    // TODO: Eventually we'll support orphaned loop directives.
+    SemaRef.Diag(D->getBeginLoc(), diag::err_acc_routine_unexpected_directive)
+        << getOpenACCName(D->getDirectiveKind()) << FD->getName();
+    SemaRef.Diag(Attr->getLocation(), diag::note_acc_routine) << FD->getName();
+  }
+  void VisitDeclStmt(DeclStmt *S) {
+    for (Decl *D : S->decls()) {
+      if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
+        // OpenACC 3.1, sec. 2.15.1 "Routine Directive", L2794-2795:
+        // "In C and C++, function static variables are not supported in
+        // functions to which a routine directive applies."
+        if (VD->isStaticLocal()) {
+          SemaRef.Diag(VD->getLocation(), diag::err_acc_routine_static_local)
+              << VD->getName() << FD->getName();
+          SemaRef.Diag(Attr->getLocation(), diag::note_acc_routine)
+              << FD->getName();
+        }
+      }
+    }
+  }
+  void VisitStmt(Stmt *S) {
+    for (Stmt *C : S->children()) {
+      if (C)
+        Visit(C);
+    }
+  }
+  RoutineChecker(Sema &SemaRef, FunctionDecl *FD, ACCRoutineDeclAttr *Attr)
+      : SemaRef(SemaRef), FD(FD), Attr(Attr) {}
+};
+
 /// See the section "Implicit Gang Clauses" in the Clang OpenACC design
 /// document.
 class ImplicitGangAdder : public StmtVisitor<ImplicitGangAdder> {
@@ -1305,26 +1388,10 @@ public:
 };
 } // namespace
 
-bool Sema::ActOnOpenACCRegionStart(OpenACCDirectiveKind DKind,
-                                   ArrayRef<ACCClause *> Clauses,
-                                   SourceLocation StartLoc) {
+bool Sema::StartOpenACCAssociatedStatement(OpenACCDirectiveKind DKind,
+                                           ArrayRef<ACCClause *> Clauses,
+                                           SourceLocation StartLoc) {
   bool ErrorFound = false;
-  // Check directive nesting.
-  SourceLocation ParentLoc;
-  OpenACCDirectiveKind ParentDKind =
-      DirStack->getRealParentDirective(ParentLoc);
-  if (!isAllowedParentForDirective(DKind, ParentDKind)) {
-    if (ParentDKind == ACCD_unknown)
-      Diag(StartLoc, diag::err_acc_orphaned_directive)
-          << getOpenACCName(DKind);
-    else {
-      Diag(StartLoc, diag::err_acc_directive_bad_nesting)
-          << getOpenACCName(ParentDKind) << getOpenACCName(DKind);
-      Diag(ParentLoc, diag::note_acc_enclosing_directive)
-          << getOpenACCName(ParentDKind);
-    }
-    ErrorFound = true;
-  }
   if (isOpenACCLoopDirective(DKind)) {
     ACCPartitioningKind LoopKind;
     // Set implicit partitionability.
@@ -1411,11 +1478,11 @@ bool Sema::ActOnOpenACCRegionStart(OpenACCDirectiveKind DKind,
   return ErrorFound;
 }
 
-bool Sema::ActOnOpenACCRegionEnd() { return false; }
+bool Sema::EndOpenACCAssociatedStatement() { return false; }
 
 StmtResult Sema::ActOnOpenACCExecutableDirective(
-    OpenACCDirectiveKind DKind, ArrayRef<ACCClause *> Clauses,
-    Stmt *AStmt, SourceLocation StartLoc, SourceLocation EndLoc) {
+    OpenACCDirectiveKind DKind, ArrayRef<ACCClause *> Clauses, Stmt *AStmt,
+    SourceLocation StartLoc, SourceLocation EndLoc) {
   StmtResult Res = StmtError();
 
   // Our strategy for combined directives is to "act on" the clauses (already
@@ -1436,6 +1503,7 @@ StmtResult Sema::ActOnOpenACCExecutableDirective(
     case ACCD_data:
     case ACCD_parallel:
     case ACCD_loop:
+    case ACCD_routine:
     case ACCD_unknown:
       llvm_unreachable("expected combined OpenACC directive");
     }
@@ -1632,8 +1700,11 @@ StmtResult Sema::ActOnOpenACCExecutableDirective(
     break;
   }
   case ACCD_parallel_loop:
-  case ACCD_unknown:
     llvm_unreachable("expected non-combined OpenACC directive");
+  case ACCD_routine:
+    llvm_unreachable("expected OpenACC executable directive or construct");
+  case ACCD_unknown:
+    llvm_unreachable("expected OpenACC directive");
   }
 
   if (ErrorFound)
@@ -1814,6 +1885,13 @@ void Sema::ActOnOpenACCLoopBreakStatement(SourceLocation BreakLoc,
   }
 }
 
+void Sema::ActOnFunctionDefinitionForOpenACC(FunctionDecl *FD) {
+  ACCRoutineDeclAttr *Attr = FD->getAttr<ACCRoutineDeclAttr>();
+  Stmt *FnBody = FD->getBody();
+  if (Attr && FnBody)
+    RoutineChecker(*this, FD, Attr).Visit(FnBody);
+}
+
 StmtResult Sema::ActOnOpenACCLoopDirective(
     ArrayRef<ACCClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
     SourceLocation EndLoc, const ArrayRef<VarDecl *> &LCVs,
@@ -1896,8 +1974,8 @@ StmtResult Sema::ActOnOpenACCParallelLoopDirective(
   ACCLoopDirective *LoopDir = cast<ACCLoopDirective>(Res.get());
 
   // Build the effective parallel directive.
-  Res = ActOnOpenACCExecutableDirective(ACCD_parallel, ParallelClauses,
-                                        LoopDir, StartLoc, EndLoc);
+  Res = ActOnOpenACCExecutableDirective(ACCD_parallel, ParallelClauses, LoopDir,
+                                        StartLoc, EndLoc);
   if (Res.isInvalid())
     return StmtError();
   ACCParallelDirective *ParallelDir = cast<ACCParallelDirective>(Res.get());
@@ -1907,7 +1985,106 @@ StmtResult Sema::ActOnOpenACCParallelLoopDirective(
                                           AStmt, ParallelDir);
 }
 
-ACCClause *Sema::ActOnOpenACCSingleExprClause(OpenACCClauseKind Kind, Expr *Expr,
+void Sema::ActOnOpenACCRoutineDirective(ArrayRef<ACCClause *> Clauses,
+                                        SourceLocation StartLoc,
+                                        SourceLocation EndLoc,
+                                        DeclGroupRef TheDeclGroup) {
+  // OpenACC 3.1, sec. 2.15.1 "Routine Directive", L2790:
+  // "At least one of the (gang, worker, vector, or seq) clauses must appear on
+  // the construct."
+  bool Found = false;
+  for (ACCClause *C : Clauses) {
+    switch (C->getClauseKind()) {
+    case ACCC_gang:
+    case ACCC_worker:
+    case ACCC_vector:
+    case ACCC_seq:
+      Found = true;
+      break;
+    default:
+      break;
+    }
+    if (Found)
+      break;
+  }
+  if (!Found) {
+    Diag(StartLoc, diag::err_acc_no_gang_worker_vector_seq_clause);
+    return;
+  }
+
+  // OpenACC 3.1, sec. 2.15.1 "Routine Directive", L2706-2708:
+  // "In C and C++, the routine directive without a name may appear immediately
+  // before a function definition, a C++ lambda, or just before a function
+  // prototype and applies to that immediately following function or prototype."
+  Decl *TheDecl = nullptr;
+  for (Decl *D : TheDeclGroup) {
+    // Permitting types in this DeclGroup enables the case that the routine
+    // directive is followed by a function prototype containing new type
+    // declarations, such as a struct return type.  We wouldn't bother to
+    // support this case except that it's already supported in the case of a
+    // function definition because the types are not in the same DeclGroup.  It
+    // would be strange to support it for function definitions but not function
+    // prototypes.
+    if (isa<TypeDecl>(D))
+      continue;
+    if (TheDecl) {
+      // This includes the case that the routine directive is followed by a
+      // single declaration with multiple function declarators, such as
+      // "void foo(), bar();".
+      Diag(StartLoc, diag::err_acc_expected_function_after_directive)
+          << getOpenACCName(ACCD_routine);
+      return;
+    }
+    TheDecl = D;
+  }
+  if (!TheDecl || !TheDecl->isFunctionOrFunctionTemplate()) {
+    // !TheDecl includes the case that the routine directive is at the end of
+    // the enclosing context (e.g., the file, or a type definition).  It also
+    // includes the case that the routine directive precedes a type declaration.
+    Diag(StartLoc, diag::err_acc_expected_function_after_directive)
+        << getOpenACCName(ACCD_routine);
+    return;
+  }
+
+  FunctionDecl *FD = TheDecl->getAsFunction();
+  ACCRoutineDeclAttr *OldAttr = FD->getAttr<ACCRoutineDeclAttr>();
+  if (!OldAttr) {
+    ACCRoutineDeclAttr *ACCAttr = ACCRoutineDeclAttr::Create(
+        Context, ACCRoutineDeclAttr::Seq, SourceRange(StartLoc, EndLoc));
+    OMPDeclareTargetDeclAttr *OMPAttr = OMPDeclareTargetDeclAttr::Create(
+        Context, OMPDeclareTargetDeclAttr::MT_To,
+        OMPDeclareTargetDeclAttr::DT_Any, -1, /*IsOpenACCTranslation=*/true,
+        SourceRange(StartLoc, EndLoc));
+    FD->addAttr(ACCAttr);
+    FD->addAttr(OMPAttr);
+    // If there's a definition, codegen operates on it, so be sure to add
+    // attributes there.  Mark the attributes as implicit instead of inherited
+    // so OpenACC source-to-source mode will know to print them for OpenMP.
+    //
+    // On the other hand, if the definition comes later, it will inherit the
+    // attributes automatically.
+    if (FunctionDecl *Def = FD->getDefinition()) {
+      if (Def != FD) {
+        ACCRoutineDeclAttr *ACCAttrClone = ACCAttr->clone(Context);
+        OMPDeclareTargetDeclAttr *OMPAttrClone = OMPAttr->clone(Context);
+        ACCAttrClone->setImplicit(true);
+        OMPAttrClone->setImplicit(true);
+        Def->addAttr(ACCAttrClone);
+        Def->addAttr(OMPAttrClone);
+      }
+    }
+    ActOnFunctionDefinitionForOpenACC(FD);
+  } else {
+    // TODO: Eventually, we need an error diagnostic if the previous routine
+    // directive is at all different from this one, but for now only exactly
+    // "acc routine seq" is supported.
+    assert(OldAttr->getPartitioning() == ACCRoutineDeclAttr::Seq &&
+           "expected acc routine to have seq");
+  }
+}
+
+ACCClause *Sema::ActOnOpenACCSingleExprClause(OpenACCClauseKind Kind,
+                                              Expr *Expr,
                                               SourceLocation StartLoc,
                                               SourceLocation LParenLoc,
                                               SourceLocation EndLoc) {

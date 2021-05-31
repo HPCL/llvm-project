@@ -78,20 +78,38 @@ OpenACCDirectiveKind parseOpenACCDirectiveKind(Parser &P) {
 }
 } // namespace
 
-/// Parsing of declarative OpenACC directives.  None are supported yet, but
-/// we want to give a better diagnostic than a syntax error.
+void Parser::ParseOpenACCClauses(OpenACCDirectiveKind DKind,
+                                 SmallVectorImpl<ACCClause *> &Clauses) {
+  SmallVector<bool, ACCC_unknown + 1> FirstClauses(ACCC_unknown + 1);
+  ConsumeToken();
+  while (Tok.isNot(tok::annot_pragma_openacc_end)) {
+    OpenACCClauseKind CKind = Tok.isAnnotation()
+                                  ? ACCC_unknown
+                                  : getOpenACCClauseKind(PP.getSpelling(Tok));
+    Actions.StartOpenACCClause(CKind);
+    ACCClause *Clause = ParseOpenACCClause(DKind, CKind, FirstClauses);
+    FirstClauses[CKind] = true;
+    if (Clause)
+      Clauses.push_back(Clause);
+    // Skip ',' if any.
+    if (Tok.is(tok::comma))
+      ConsumeToken();
+    Actions.EndOpenACCClause();
+  }
+}
+
+/// Parsing of OpenACC declarative directives.
 ///
+///   routine-directive:
+///     annot_pragma_openacc 'routine' 'seq' annot_pragma_openacc_end
+///     <function declaration/definition>
 Parser::DeclGroupPtrTy Parser::ParseOpenACCDeclarativeDirective() {
   assert(Tok.is(tok::annot_pragma_openacc) && "Not an OpenACC directive!");
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
-
-  ConsumeAnnotationToken();
+  SmallVector<ACCClause *, 5> Clauses;
+  SourceLocation StartLoc = ConsumeAnnotationToken(), EndLoc;
   OpenACCDirectiveKind DKind = parseOpenACCDirectiveKind(*this);
-
   switch (DKind) {
-  case ACCD_unknown:
-    Diag(Tok, diag::err_acc_unknown_directive);
-    break;
   case ACCD_update:
   case ACCD_enter_data:
   case ACCD_exit_data:
@@ -101,32 +119,53 @@ Parser::DeclGroupPtrTy Parser::ParseOpenACCDeclarativeDirective() {
   case ACCD_parallel_loop:
     Diag(Tok, diag::err_acc_unexpected_directive)
         << getOpenACCName(DKind);
+    SkipUntil(tok::annot_pragma_openacc_end);
+    break;
+  case ACCD_routine: {
+    if (!Actions.getCurLexicalContext()->isFileContext()) {
+      Diag(StartLoc, diag::err_acc_unexpected_directive)
+          << getOpenACCName(DKind);
+      SkipUntil(tok::annot_pragma_openacc_end);
+      return nullptr;
+    }
+    if (Actions.StartOpenACCDirectiveAndAssociate(DKind, StartLoc)) {
+      SkipUntil(tok::annot_pragma_openacc_end);
+      return nullptr;
+    }
+    SmallVector<ACCClause *, 5> Clauses;
+    ParseOpenACCClauses(DKind, Clauses);
+    EndLoc = Tok.getLocation();
+    // Consume final annot_pragma_openacc_end.
+    ConsumeAnnotationToken();
+    DeclGroupPtrTy Group;
+    ParseTopLevelDecl(Group);
+    Actions.ActOnOpenACCRoutineDirective(Clauses, StartLoc, EndLoc,
+                                         Group.get());
+    Actions.EndOpenACCDirectiveAndAssociate();
+    return Group;
+  }
+  case ACCD_unknown:
+    Diag(Tok, diag::err_acc_unknown_directive);
+    SkipUntil(tok::annot_pragma_openacc_end);
     break;
   }
-  while (Tok.isNot(tok::annot_pragma_openacc_end))
-    ConsumeAnyToken();
-  ConsumeAnyToken();
   return nullptr;
 }
 
-///  Parsing of declarative or executable OpenACC directives.
+/// Parsing of OpenACC executable directives and constructs.
 ///
-///       executable-directive:
-///         annot_pragma_openacc
-///         'update' | 'enter data' | 'exit data' | 'data' | 'parallel' | 'loop'
-///         | 'parallel loop'
-///         {clause}
-///         annot_pragma_openacc_end
-///
-StmtResult Parser::ParseOpenACCDeclarativeOrExecutableDirective(
-    ParsedStmtContext StmtCtx) {
+///   executable-directive:
+///     annot_pragma_openacc
+///     'update' | 'enter data' | 'exit data' | 'data' | 'parallel' | 'loop'
+///     | 'parallel loop'
+///     {clause}
+///     annot_pragma_openacc_end
+StmtResult Parser::ParseOpenACCExecutableDirective(ParsedStmtContext StmtCtx) {
   assert(Tok.is(tok::annot_pragma_openacc) && "Not an OpenACC directive!");
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
-  SmallVector<ACCClause *, 5> Clauses;
-  SmallVector<bool, ACCC_unknown + 1> FirstClauses(ACCC_unknown + 1);
   unsigned ScopeFlags =
       Scope::FnScope | Scope::DeclScope | Scope::OpenACCDirectiveScope;
-  SourceLocation Loc = ConsumeAnnotationToken(), EndLoc;
+  SourceLocation StartLoc = ConsumeAnnotationToken(), EndLoc;
   OpenACCDirectiveKind DKind = parseOpenACCDirectiveKind(*this);
   StmtResult Directive = StmtError();
   bool HasAssociatedStatement = true;
@@ -158,43 +197,30 @@ StmtResult Parser::ParseOpenACCDeclarativeOrExecutableDirective(
   case ACCD_parallel:
   case ACCD_loop:
   case ACCD_parallel_loop: {
-    ConsumeToken();
-
     if (isOpenACCLoopDirective(DKind))
       ScopeFlags |= Scope::OpenACCLoopDirectiveScope;
     ParseScope ACCDirectiveScope(this, ScopeFlags);
-    Actions.StartOpenACCDABlock(DKind, Loc);
+    bool ErrorFound = Actions.StartOpenACCDirectiveAndAssociate(DKind,
+                                                                StartLoc);
 
-    while (Tok.isNot(tok::annot_pragma_openacc_end)) {
-      OpenACCClauseKind CKind =
-          Tok.isAnnotation()
-              ? ACCC_unknown : getOpenACCClauseKind(PP.getSpelling(Tok));
-      Actions.StartOpenACCClause(CKind);
-      ACCClause *Clause = ParseOpenACCClause(DKind, CKind, FirstClauses);
-      FirstClauses[CKind] = true;
-      if (Clause)
-        Clauses.push_back(Clause);
-
-      // Skip ',' if any.
-      if (Tok.is(tok::comma))
-        ConsumeToken();
-      Actions.EndOpenACCClause();
-    }
+    SmallVector<ACCClause *, 5> Clauses;
+    ParseOpenACCClauses(DKind, Clauses);
     // End location of the directive.
     EndLoc = Tok.getLocation();
     // Consume final annot_pragma_openacc_end.
     ConsumeAnnotationToken();
 
-    bool ErrorFound = Actions.ActOnOpenACCRegionStart(DKind, Clauses, Loc);
+    ErrorFound |= Actions.StartOpenACCAssociatedStatement(DKind, Clauses,
+                                                          StartLoc);
     StmtResult AssociatedStmt;
     if (HasAssociatedStatement)
       AssociatedStmt = ParseStatement();
-    ErrorFound |= Actions.ActOnOpenACCRegionEnd();
+    ErrorFound |= Actions.EndOpenACCAssociatedStatement();
     Directive = Actions.ActOnOpenACCExecutableDirective(
-        DKind, Clauses, AssociatedStmt.get(), Loc, EndLoc);
+        DKind, Clauses, AssociatedStmt.get(), StartLoc, EndLoc);
 
     // Exit scope.
-    Actions.EndOpenACCDABlock();
+    Actions.EndOpenACCDirectiveAndAssociate();
     ACCDirectiveScope.Exit();
     // Don't bother translating to OpenMP if we've encountered errors or we
     // might end up with redundant diagnostics, some of which might mention
@@ -210,6 +236,10 @@ StmtResult Parser::ParseOpenACCDeclarativeOrExecutableDirective(
       Directive = StmtError();
     break;
   }
+  case ACCD_routine:
+    Diag(Tok, diag::err_acc_unexpected_directive) << getOpenACCName(DKind);
+    SkipUntil(tok::annot_pragma_openacc_end);
+    break;
   case ACCD_unknown:
     Diag(Tok, diag::err_acc_unknown_directive);
     SkipUntil(tok::annot_pragma_openacc_end);
@@ -283,7 +313,19 @@ ACCClause *Parser::ParseOpenACCClause(
           ErrorFound = true;
         }
       }
-      if (CKind == ACCC_seq) {
+      if (DKind == ACCD_routine) {
+        OpenACCClauseKind CKindOther;
+        if ((CKind == ACCC_gang || CKind == ACCC_worker ||
+             CKind == ACCC_vector || CKind == ACCC_seq) &&
+            (FirstClauses[CKindOther = ACCC_gang] ||
+             FirstClauses[CKindOther = ACCC_worker] ||
+             FirstClauses[CKindOther = ACCC_vector] ||
+             FirstClauses[CKindOther = ACCC_seq])) {
+          Diag(Tok, diag::err_acc_mutually_exclusive_clauses)
+              << getOpenACCName(CKind) << getOpenACCName(CKindOther);
+          ErrorFound = true;
+        }
+      } else if (CKind == ACCC_seq) {
         OpenACCClauseKind CKindOther;
         if (FirstClauses[CKindOther = ACCC_gang] ||
             FirstClauses[CKindOther = ACCC_worker] ||
@@ -292,10 +334,9 @@ ACCClause *Parser::ParseOpenACCClause(
               << getOpenACCName(CKind) << getOpenACCName(CKindOther);
           ErrorFound = true;
         }
-      }
-      else if ((CKind == ACCC_gang || CKind == ACCC_worker ||
-                CKind == ACCC_vector) &&
-               FirstClauses[ACCC_seq]) {
+      } else if ((CKind == ACCC_gang || CKind == ACCC_worker ||
+                  CKind == ACCC_vector) &&
+                 FirstClauses[ACCC_seq]) {
         Diag(Tok, diag::err_acc_mutually_exclusive_clauses)
             << getOpenACCName(CKind) << getOpenACCName(ACCC_seq);
         ErrorFound = true;

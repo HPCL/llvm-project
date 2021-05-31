@@ -3373,12 +3373,16 @@ public:
 
   /// Parses declarative OpenACC directives.
   DeclGroupPtrTy ParseOpenACCDeclarativeDirective();
-  /// Parses declarative or executable OpenACC directive.
+  /// Parses OpenACC executable directives or constructs.
   ///
   /// \param StmtCtx The context in which we're parsing the directive.
-  StmtResult
-  ParseOpenACCDeclarativeOrExecutableDirective(ParsedStmtContext StmtCtx);
-  /// Parses clause of kind \a CKind for directive of a kind \a Kind.
+  StmtResult ParseOpenACCExecutableDirective(ParsedStmtContext StmtCtx);
+  /// Parses clauses for directive of kind \a Kind.
+  ///
+  /// \param DKind Kind of current directive.
+  void ParseOpenACCClauses(OpenACCDirectiveKind DKind,
+                           SmallVectorImpl<ACCClause *> &Clauses);
+  /// Parses clause of kind \a CKind for directive of kind \a Kind.
   ///
   /// \param DKind Kind of current directive.
   /// \param CKind Kind of current clause.

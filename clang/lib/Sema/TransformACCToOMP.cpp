@@ -314,6 +314,7 @@ class TransformACCToOMP : public TransformContext<TransformACCToOMP> {
       break;
     case ACCD_update:
     case ACCD_loop:
+    case ACCD_routine:
     case ACCD_unknown:
       llvm_unreachable("expected directive that takes data clauses");
     }

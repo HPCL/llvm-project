@@ -11254,14 +11254,25 @@ private:
   void DestroyOpenACCDirectiveStack();
 
 public:
-  /// Called on start of new data attribute block.
-  void StartOpenACCDABlock(OpenACCDirectiveKind RealDKind, SourceLocation Loc);
-  /// Start analysis of clauses.
+  /// Called at start of an OpenACC directive before its clauses.  Returns true
+  /// in the case of an error.
+  bool StartOpenACCDirectiveAndAssociate(OpenACCDirectiveKind RealDKind,
+                                         SourceLocation Loc);
+  /// Called at start of a clause.
   void StartOpenACCClause(OpenACCClauseKind K);
-  /// End analysis of clauses.
+  /// Called at end of a clause.
   void EndOpenACCClause();
-  /// Called on end of data attribute block.
-  void EndOpenACCDABlock();
+  /// Called at start of an OpenACC directive's associated statement.  Returns
+  /// true in the case of an error.
+  bool StartOpenACCAssociatedStatement(OpenACCDirectiveKind DKind,
+                                       ArrayRef<ACCClause *> Clauses,
+                                       SourceLocation StartLoc);
+  /// Called at end of an OpenACC directive's associated statement and before
+  /// the \c ActOn function for the directive.  Returns true in the case of an
+  /// error.
+  bool EndOpenACCAssociatedStatement();
+  /// Called after the \c ActOn function for the directive.
+  void EndOpenACCDirectiveAndAssociate();
 
   /// If the current region is an OpenACC loop region, record any loop control
   /// variables assigned but not declared in \p Init, the init of the attached
@@ -11271,13 +11282,10 @@ public:
   /// directive.
   void ActOnOpenACCLoopBreakStatement(SourceLocation BreakLoc,
                                       Scope *CurScope);
+  /// Check a function definition against any OpenACC restrictions (such as any
+  /// OpenACC routine directive).
+  void ActOnFunctionDefinitionForOpenACC(FunctionDecl *FD);
 
-  /// Start of OpenACC region.
-  bool ActOnOpenACCRegionStart(OpenACCDirectiveKind DKind,
-                               ArrayRef<ACCClause *> Clauses,
-                               SourceLocation StartLoc);
-  /// End of OpenACC region.
-  bool ActOnOpenACCRegionEnd();
   StmtResult ActOnOpenACCExecutableDirective(
       OpenACCDirectiveKind Kind, ArrayRef<ACCClause *> Clauses, Stmt *AStmt,
       SourceLocation StartLoc, SourceLocation EndLoc);
@@ -11314,6 +11322,10 @@ public:
   StmtResult ActOnOpenACCParallelLoopDirective(
       ArrayRef<ACCClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc);
+  /// Called on well-formed '\#pragma acc routine'.
+  void ActOnOpenACCRoutineDirective(ArrayRef<ACCClause *> Clauses,
+                                    SourceLocation StartLoc,
+                                    SourceLocation EndLoc, DeclGroupRef Decl);
 
   ACCClause *ActOnOpenACCSingleExprClause(OpenACCClauseKind Kind,
                                           Expr *Expr,

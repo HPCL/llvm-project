@@ -218,6 +218,7 @@ public:
     std::string RewriteString;
     llvm::raw_string_ostream RewriteStream(RewriteString);
 
+    // Generate new text.
     switch (OpenACCPrint) {
     case OpenACCPrint_ACC:
     case OpenACCPrint_OMP_HEAD:
@@ -373,6 +374,203 @@ public:
     // Recurse to children if we didn't print the OpenACC and OpenMP
     // associated statements separately.
     return DirectiveOnly;
+  }
+  bool VisitDecl(Decl *D) {
+    // TODO: There's a lot of logic in here that could probably be shared with
+    // VisitACCExecutableDirective by encapsulating into separate functions.
+    SourceManager &SM = Context->getSourceManager();
+    const LangOptions &LO = Context->getLangOpts();
+
+    // Is this a function prototype or definition?
+    FunctionDecl *FD = dyn_cast<FunctionDecl>(D);
+    if (!FD)
+      return true;
+
+    // Is there an OpenACC routine directive to rewrite?
+    ACCRoutineDeclAttr *ACCAttr = FD->getAttr<ACCRoutineDeclAttr>();
+    OMPDeclareTargetDeclAttr *OMPAttr = FD->getAttr<OMPDeclareTargetDeclAttr>();
+    if (!ACCAttr || !OMPAttr || !OMPAttr->getIsOpenACCTranslation())
+      return true;
+    assert(ACCAttr->isInherited() == OMPAttr->isInherited() &&
+           "expected OpenACC attribute and its OpenMP translation to either "
+           "both be inherited or neither");
+    if (ACCAttr->isInherited())
+      return true;
+
+    // Are we rewriting an OpenACC directive or adding OpenMP directives where
+    // there was no OpenACC directive?
+    bool RewriteDirective = !ACCAttr->isImplicit();
+
+    // Can we rewrite the directive?
+    //
+    // TODO: If the directive is in a _Pragma, we give up.  Maybe we can try
+    // harder as we do in VisitACCExecutableDirective.  See comments there for
+    // how all this works.  To summarize: If the directive end location is not
+    // rewritable, apparently we have _Pragma form.  Otherwise, we have #pragma
+    // form, whose begin and end locations are always rewritable.
+    SourceRange DirectiveRange = ACCAttr->getRange();
+    if (RewriteDirective) {
+      if (!Rewrite.isRewritable(DirectiveRange.getEnd())) {
+        Context->getDiagnostics().Report(
+            DirectiveRange.getEnd(),
+            diag::err_rewrite_acc_routine_in_pragma_op);
+        return true;
+      }
+      assert(Rewrite.isRewritable(DirectiveRange.getBegin()) &&
+             "expected start of directive to be rewritable because end is");
+    }
+
+    // Can we insert before the associated function prototype or definition?
+    SourceLocation FDBegin = FD->getBeginLoc();
+    if (!RewriteDirective && !Rewrite.isRewritable(FDBegin)) {
+      Context->getDiagnostics().Report(
+          FDBegin, diag::err_rewrite_acc_routine_function_start_in_macro);
+      return true;
+    }
+
+    // Can we insert after the associated function prototype or definition?
+    //
+    // Function definitions are easy as the end location is already correct.
+    SourceLocation FDEnd = FD->getEndLoc();
+    if (FD != FD->getDefinition()) {
+#ifndef NDEBUG
+      Token Tok;
+      Lexer::getRawToken(SM.getSpellingLoc(FDEnd), Tok, SM, LO);
+      assert(Tok.getKind() != tok::semi &&
+             "expected FunctionDecl's end token not to be a semicolon");
+#endif
+      Optional<Token> Next = Lexer::findNextToken(FDEnd, SM, LO);
+      // If Tok is expanded from a macro and is not the last token in the
+      // expansion, findNextToken refuses to look for the next token and returns
+      // None.  Assume the final semicolon is the next token and is thus within
+      // the expansion, and so refuse to rewrite.
+      if (!Next.hasValue()) {
+        Context->getDiagnostics().Report(
+            FDEnd, diag::err_rewrite_acc_routine_function_end_in_macro);
+        return true;
+      }
+      // If Next is an identifier, assume it's a macro whose expansion's
+      // first token is the final semicolon, and so refuse to rewrite.
+      if (Next.getValue().getKind() == tok::raw_identifier) {
+        Context->getDiagnostics().Report(
+            Next.getValue().getLocation(),
+            diag::err_rewrite_acc_routine_function_end_in_macro);
+        return true;
+      }
+      assert(Next.getValue().getKind() == tok::semi &&
+             "expected semicolon after FunctionDecl");
+      FDEnd = Next.getValue().getLocation();
+      assert(SM.getCharacterData(FDEnd)[0] == ';' &&
+             "expected tok::semi to look like a semicolon");
+      assert(Rewrite.isRewritable(FDEnd) &&
+             "expected Lexer::findNextToken not to return token within macro "
+             "expansion");
+    } else {
+#ifndef NDEBUG
+      Token Tok;
+      Lexer::getRawToken(SM.getSpellingLoc(FDEnd), Tok, SM, LO);
+      assert(Tok.getKind() == tok::r_brace &&
+             "expected FunctionDecl's end token to be a right brace");
+      assert(SM.getCharacterData(FDEnd)[0] == '}' &&
+             "expected tok::r_brace to look like a right brace");
+#endif
+      if (!Rewrite.isRewritable(FDEnd)) {
+        Context->getDiagnostics().Report(
+            FDEnd, diag::err_rewrite_acc_routine_function_end_in_macro);
+        return true;
+      }
+    }
+
+    // What is the existing indentation?
+    StringRef IndentText;
+    if (RewriteDirective)
+      IndentText = Lexer::getIndentationForLine(DirectiveRange.getBegin(), SM);
+    else
+      IndentText = Lexer::getIndentationForLine(FDBegin, SM);
+
+    // Set up buffers for the new text.
+    std::string RewriteBeginString;
+    std::string RewriteEndString;
+    llvm::raw_string_ostream RewriteBeginStream(RewriteBeginString);
+    llvm::raw_string_ostream RewriteEndStream(RewriteEndString);
+
+    // Generate new text.
+    PrintingPolicy PolicyOMP(LO);
+    PolicyOMP.OpenACCPrint = OpenACCPrint_OMP;
+    if (!RewriteDirective) {
+      // If the rest of the line preceding the function declaration isn't
+      // blank, insert a newline before the inserted directive.  Otherwise,
+      // don't or you'll create a blank line.
+      FileID File = SM.getFileID(FDBegin);
+      StringRef Buffer = SM.getBufferData(File);
+      const char *P = SM.getCharacterData(FDBegin);
+      if (P != Buffer.begin())
+        --P;
+      for (; P != Buffer.begin() && *P !='\n'; --P) {
+        if (!std::isspace(*P)) {
+          RewriteBeginStream << '\n' << IndentText;
+          break;
+        }
+      }
+    }
+    RewriteEndStream << '\n' << IndentText;
+    switch (OpenACCPrint) {
+    case OpenACCPrint_ACC:
+    case OpenACCPrint_OMP_HEAD:
+      llvm_unreachable("unexpected OpenACC print kind while rewriting input");
+    case OpenACCPrint_OMP:
+      OMPAttr->printPretty(RewriteBeginStream, PolicyOMP);
+      break;
+    case OpenACCPrint_OMP_ACC:
+      OMPAttr->printPretty(RewriteBeginStream, PolicyOMP);
+      if (RewriteDirective) {
+        RewriteBeginStream << IndentText << "// " << Rewrite.getRewrittenText(
+            CharSourceRange::getCharRange(DirectiveRange));
+      }
+      break;
+    case OpenACCPrint_ACC_OMP:
+      if (RewriteDirective) {
+        RewriteBeginStream << Rewrite.getRewrittenText(
+            CharSourceRange::getCharRange(DirectiveRange));
+        RewriteBeginStream << '\n' << IndentText;
+      }
+      RewriteBeginStream << "// ";
+      OMPAttr->printPretty(RewriteBeginStream, PolicyOMP);
+      RewriteEndStream << "// ";
+      break;
+    }
+    if (!RewriteDirective)
+      RewriteBeginStream << IndentText;
+    RewriteEndStream << "#pragma omp end declare target";
+    // We previously asserted that FDEnd is either ';' or '}'.  The next
+    // character comes after that token.  If the rest of the line isn't blank,
+    // insert a newline at the end directive.  Otherwise, don't or you'll create
+    // a blank linke.
+    FileID File = SM.getFileID(FDEnd);
+    StringRef Buffer = SM.getBufferData(File);
+    for (const char *P = SM.getCharacterData(FDEnd) + 1;
+         P != Buffer.end() && *P !='\n'; ++P) {
+      if (!std::isspace(*P)) {
+        RewriteEndStream << '\n';
+        break;
+      }
+    }
+    RewriteBeginStream.flush();
+    RewriteEndStream.flush();
+
+    // If RewriteBeginString will replace DirectiveRange, which doesn't include
+    // the original directive's trailing newline, don't include one here.
+    if (RewriteDirective && RewriteBeginString.back() == '\n')
+      RewriteBeginString.pop_back();
+
+    // Perform replacement.
+    if (RewriteDirective)
+      Rewrite.ReplaceText(CharSourceRange::getCharRange(DirectiveRange),
+                          RewriteBeginString);
+    else
+      Rewrite.InsertTextBefore(FDBegin, RewriteBeginString);
+    Rewrite.InsertTextAfterToken(FDEnd, RewriteEndString);
+    return true;
   }
 };
 } // end anonymous namespace

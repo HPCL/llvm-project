@@ -28,9 +28,18 @@ namespace clang {
 // AST classes for directives.
 //===----------------------------------------------------------------------===//
 
-/// This is a basic class for representing single OpenACC executable
-/// directive.
+/// This is a basic class for representing OpenACC executable directives and
+/// constructs.
 ///
+/// FIXME: The name should be changed to reflect that it's not just OpenACC
+/// executable directives (like acc update).  The base class ExecutableDirective
+/// should become something more generic too then, but it has to also make sense
+/// for OMPExecutableDirective.  ActOnOpenACCExecutableDirective should be
+/// renamed in Sema accordingly.  Perhaps ACCExecutableDirectiveOrConstruct is
+/// the right name to distinguish it from declarative directives.  Perhaps the
+/// base class should be ExecutableDirectiveOrConstruct.  Or maybe
+/// ACCDirectiveStmt and base class DirectiveStmt is a nice summary of a
+/// directive that is more than declarative.
 class ACCExecutableDirective : public ExecutableDirective {
   friend class ASTStmtReader;
   /// Kind of the directive.

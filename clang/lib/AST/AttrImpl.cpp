@@ -132,6 +132,32 @@ void OMPDeclareSimdDeclAttr::printPrettyPragma(
   }
 }
 
+void OMPDeclareTargetDeclAttr::printPretty(raw_ostream &OS,
+                                           const PrintingPolicy &Policy) const {
+  // TODO: If this isn't an OpenACC translation, print exactly the way upstream
+  // prints it to avoid merge conflicts in tests.  However, we need to come to
+  // terms with why inherited attributes should be printed as that seems to
+  // indicate they weren't specified in the original source.  See related todo
+  // in DeclPrinter::VisitDeclContext.
+  OpenACCPrintKind PrintMode = OpenACCPrint_OMP;
+  if (getIsOpenACCTranslation())
+    PrintMode = isInherited() ? OpenACCPrint_ACC : Policy.OpenACCPrint;
+  switch (PrintMode) {
+  case OpenACCPrint_ACC_OMP:
+    OS << "// ";
+    LLVM_FALLTHROUGH;
+  case OpenACCPrint_OMP:
+  case OpenACCPrint_OMP_ACC:
+  case OpenACCPrint_OMP_HEAD:
+    OS << "#pragma omp declare target";
+    printPrettyPragma(OS, Policy);
+    OS << '\n';
+    break;
+  case OpenACCPrint_ACC:
+    break;
+  }
+}
+
 void OMPDeclareTargetDeclAttr::printPrettyPragma(
     raw_ostream &OS, const PrintingPolicy &Policy) const {
   // Use fake syntax because it is for testing and debugging purpose only.
@@ -195,6 +221,25 @@ void OMPDeclareVariantAttr::printPrettyPragma(
     OS << ")";
   }
   OS << " match(" << traitInfos << ")";
+}
+
+void ACCRoutineDeclAttr::printPretty(raw_ostream &OS,
+                                     const PrintingPolicy &Policy) const {
+  if (isInherited() || isImplicit())
+    return;
+  switch (Policy.OpenACCPrint) {
+  case OpenACCPrint_OMP_ACC:
+    OS << "// ";
+    LLVM_FALLTHROUGH;
+  case OpenACCPrint_ACC:
+  case OpenACCPrint_ACC_OMP:
+    OS << "#pragma acc routine "
+       << ConvertPartitioningTyToStr(getPartitioning()) << "\n";
+    break;
+  case OpenACCPrint_OMP:
+  case OpenACCPrint_OMP_HEAD:
+    break;
+  }
 }
 
 #include "clang/AST/AttrImpl.inc"

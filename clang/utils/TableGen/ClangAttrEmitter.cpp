@@ -1416,6 +1416,8 @@ static void
 writePrettyPrintFunction(const Record &R,
                          const std::vector<std::unique_ptr<Argument>> &Args,
                          raw_ostream &OS) {
+  if (R.getValueAsBit("HasCustomPrintPretty"))
+    return;
   std::vector<FlattenedSpelling> Spellings = GetFlattenedSpellings(R);
 
   OS << "void " << R.getName() << "Attr::printPretty("

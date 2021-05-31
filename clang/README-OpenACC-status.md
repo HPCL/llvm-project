@@ -240,7 +240,7 @@ Run-Time Environment Variables
     * Appearing within a `parallel` construct and any number of levels
       of nesting within other `loop` directives are supported.
     * Appearing outside a `parallel` construct (that is, an orphaned
-      loop) is not yet supported.
+      `loop` construct) is not yet supported.
 * Use without clauses is supported.
 * Supported partitionability clauses
     * Implicit `independent`
@@ -303,6 +303,25 @@ Run-Time Environment Variables
 * A `reduction` clause implies a `copy` clause (overriding the
   implicit `firstprivate` clause).
 
+`routine` Directive
+-------------------
+
+* Lexical context
+    * Appearing at file scope is supported.
+    * Appearing within a function definition is not supported.
+* Supported clauses
+    * `seq` (required)
+* Associated declaration
+    * A lone function definition or prototype is supported.
+    * A declaration containing multiple declarators is not supported.
+      For example, `void foo(), bar();`.
+* Function definition body
+    * Appearance of any OpenACC directive produces a compile-time
+      error diagnostic.  Thus, orphaned `loop` constructs are not yet
+      supported.
+    * Declaration of a static local variable produces a compile-time
+      error diagnostic.
+
 Subarrays
 ---------
 
@@ -317,10 +336,11 @@ Subarrays
 Device-Side Directives
 ----------------------
 
-Nesting of an `update`, `data`, `parallel`, or `parallel loop`
-directive inside a `parallel`, `loop`, or `parallel loop` construct is
-not yet supported.  We're not aware of any OpenACC implementation that
-supports this yet.
+Nesting of an `update`, `enter data`, `exit data`, `data`, `parallel`,
+or `parallel loop` directive inside a `parallel`, `loop`, or `parallel
+loop` construct or inside a function attributed with a `routine`
+directive is not yet supported.  We're not aware of any OpenACC
+implementation that supports such cases yet.
 
 OpenACC Runtime Library API and Preprocessor
 --------------------------------------------

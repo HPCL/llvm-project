@@ -319,6 +319,15 @@ def err_rewrite_acc_end_in_macro : Error<
 def err_rewrite_acc_end_in_pragma_op : Error<
   "cannot rewrite OpenACC directive that has no associated statement and that "
   "appears within a _Pragma operator">;
+def err_rewrite_acc_routine_in_pragma_op : Error<
+  "cannot rewrite OpenACC routine directive that appears within a _Pragma "
+  "operator">;
+def err_rewrite_acc_routine_function_start_in_macro : Error<
+  "cannot rewrite OpenACC routine directive whose associated function "
+  "declaration starts within a macro expansion">;
+def err_rewrite_acc_routine_function_end_in_macro : Error<
+  "cannot rewrite OpenACC routine directive whose associated function "
+  "declaration ends within a macro expansion">;
 } // end of RewriteOpenACC category
 
 }
