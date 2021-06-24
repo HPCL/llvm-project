@@ -22,7 +22,7 @@ public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
     CheckFactories.registerCheck<FunctionNameCheck>("petsc-function-name-check");
     CheckFactories.registerCheck<PrivateFunctionNameCheck>("petsc-private-function-name-check");
-    // CheckFactories.registerCheck<MacroNameCheck>("petsc-macro-name-check");
+    CheckFactories.registerCheck<MacroNameCheck>("petsc-macro-name-check");
     CheckFactories.registerCheck<IfStatementRuleCheck>("petsc-if-stmt-rule-check");
     // CheckFactories.registerCheck<IfDefRuleCheck>("petsc-if-def-rule-check");
     CheckFactories.registerCheck<FunctionImplNameCheck>("petsc-function-impl-name-check");
