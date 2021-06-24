@@ -138,6 +138,10 @@ extern volatile int ZirconModuleAnchorSource;
 static int LLVM_ATTRIBUTE_UNUSED ZirconModuleAnchorDestination =
     ZirconModuleAnchorSource;
 
+extern volatile int PetscModuleAnchorSource; 
+static int LLVM_ATTRIBUTE_UNUSED PetscModuleAnchorDestination = 
+    PetscModuleAnchorSource; 
+
 } // namespace tidy
 } // namespace clang
 
