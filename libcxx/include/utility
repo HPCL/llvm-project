@@ -210,6 +210,10 @@ template <class T>
 #include <__config>
 #include <__debug>
 #include <__tuple>
+#include <__utility/declval.h>
+#include <__utility/forward.h>
+#include <__utility/move.h>
+#include <__utility/swap.h>
 #include <__utility/to_underlying.h>
 #include <compare>
 #include <cstddef>
@@ -265,29 +269,6 @@ operator>=(const _Tp& __x, const _Tp& __y)
 }
 
 }  // rel_ops
-
-// swap_ranges is defined in <type_traits>`
-
-// swap is defined in <type_traits>
-
-// move_if_noexcept
-
-template <class _Tp>
-_LIBCPP_NODISCARD_EXT inline _LIBCPP_INLINE_VISIBILITY _LIBCPP_CONSTEXPR_AFTER_CXX11
-#ifndef _LIBCPP_CXX03_LANG
-typename conditional
-<
-    !is_nothrow_move_constructible<_Tp>::value && is_copy_constructible<_Tp>::value,
-    const _Tp&,
-    _Tp&&
->::type
-#else  // _LIBCPP_CXX03_LANG
-const _Tp&
-#endif
-move_if_noexcept(_Tp& __x) _NOEXCEPT
-{
-    return _VSTD::move(__x);
-}
 
 #if _LIBCPP_STD_VER > 14
 template <class _Tp>
