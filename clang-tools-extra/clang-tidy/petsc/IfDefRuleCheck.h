@@ -18,13 +18,13 @@ namespace petsc {
 /// FIXME: Write a short description.
 ///
 /// For the user-facing documentation see:
-/// http://clang.llvm.org/extra/clang-tidy/checks/petsc-function-enum-name-check.html
+/// http://clang.llvm.org/extra/clang-tidy/checks/petsc-macro-name-check.html
 class IfDefRuleCheck : public ClangTidyCheck {
 public:
   IfDefRuleCheck(StringRef Name, ClangTidyContext *Context)
       : ClangTidyCheck(Name, Context) {}
-  void registerMatchers(ast_matchers::MatchFinder *Finder) override;
-  void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
+  void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP
+                         , Preprocessor *ModuleExpanderPP) override;
 };
 
 } // namespace petsc

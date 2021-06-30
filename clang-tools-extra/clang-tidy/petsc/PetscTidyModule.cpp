@@ -24,7 +24,7 @@ public:
     CheckFactories.registerCheck<PrivateFunctionNameCheck>("petsc-private-function-name-check");
     CheckFactories.registerCheck<MacroNameCheck>("petsc-macro-name-check");
     CheckFactories.registerCheck<IfStatementRuleCheck>("petsc-if-stmt-rule-check");
-    // CheckFactories.registerCheck<IfDefRuleCheck>("petsc-if-def-rule-check");
+    CheckFactories.registerCheck<IfDefRuleCheck>("petsc-if-def-rule-check");
     CheckFactories.registerCheck<FunctionImplNameCheck>("petsc-function-impl-name-check");
     CheckFactories.registerCheck<FunctionInStructNameCheck>("petsc-function-in-struct-name-check");
     CheckFactories.registerCheck<EnumTypeNameCheck>("petsc-enum-ty-name-check");
