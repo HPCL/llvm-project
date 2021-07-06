@@ -3,7 +3,6 @@
 #include "../ClangTidyModuleRegistry.h" 
 #include "FunctionNameCheck.h"
 #include "PrivateFunctionNameCheck.h" 
-#include "StructNameCheck.h" 
 #include "MacroNameCheck.h" 
 #include "IfStatementRuleCheck.h" 
 #include "IfDefRuleCheck.h" 

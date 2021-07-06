@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <iostream>
+#include <fstream>
 
 using namespace clang::ast_matchers;
 using namespace llvm; 
@@ -38,29 +40,33 @@ private:
     Preprocessor *PP;
     const SourceManager &SM; 
     ClangTidyCheck *CHECK;
+    std::ofstream &stats_file; 
 public:
-    IfDefRuleCallBack(Preprocessor *PP, const SourceManager &SM
-                                    , ClangTidyCheck *CHECK);
-    void Ifdef(SourceLocation Loc
+    static int faults_counter;
+    IfDefRuleCallBack(std::ofstream &stats_file, Preprocessor *PP
+                    , const SourceManager &SM
+                    , ClangTidyCheck *CHECK);
+    virtual void Ifdef(SourceLocation Loc
                     , const Token &MacroNameTok 
                     , const MacroDefinition &MD) override; 
 
-    void Elifdef(SourceLocation Loc
+    virtual void Elifdef(SourceLocation Loc
                     , const Token &MacroNameTok 
                     , const MacroDefinition &MD) override;
 
-    void Ifndef(SourceLocation Loc 
+    virtual void Ifndef(SourceLocation Loc 
                     , const Token &MacroNameTok 
                     , const MacroDefinition &MD) override; 
 
-    void Elifndef(SourceLocation Loc 
+    virtual void Elifndef(SourceLocation Loc 
                     , const Token &MacroNameTok 
-                    , const MacroDefinition &MD) override;
+                    , const MacroDefinition &MD) override; 
 };
 
-IfDefRuleCallBack::IfDefRuleCallBack(Preprocessor *PP, const SourceManager &SM
-                                                 , ClangTidyCheck *CHECK) 
-                : PP(PP), SM(SM), CHECK(CHECK)
+IfDefRuleCallBack::IfDefRuleCallBack(std::ofstream &stats_file, 
+                                    Preprocessor *PP, const SourceManager &SM
+                                    , ClangTidyCheck *CHECK) 
+                : PP(PP), SM(SM), CHECK(CHECK), stats_file(stats_file)
 {
 }
 
@@ -73,17 +79,21 @@ IfDefRuleCallBack::Ifdef(SourceLocation Loc
                                "Rather, use #if defined(... or " 
                                "#if !defined(.... Better, use " 
                                "PetscDefined()"); 
+    faults_counter++;
+    // this -> stats_file << "Ifdef, " << faults_counter << "\n"; 
 }
 
 void 
 IfDefRuleCallBack::Elifdef(SourceLocation Loc 
                         , const Token &MacroNameTok 
-                        , const MacroDefinition &MD)
+                        , const MacroDefinition &MD) 
 {
     this -> CHECK -> diag(Loc, "Do not use #ifdef or #ifndef. " 
                                "Rather, use #if defined(... or " 
                                "#if !defined(.... Better, use " 
                                "PetscDefined()");
+    faults_counter++;
+    // this -> stats_file << "Elifdef, " << faults_counter << "\n";
 }
 
 void 
@@ -95,6 +105,8 @@ IfDefRuleCallBack::Ifndef(SourceLocation Loc
                                "Rather, use #if defined(... or " 
                                "#if !defined(.... Better, use " 
                                "PetscDefined()");
+    faults_counter++;
+    // this -> stats_file << "Ifndef, " << faults_counter << "\n";
 
 }
 
@@ -107,19 +119,20 @@ IfDefRuleCallBack::Elifndef(SourceLocation Loc
                                "Rather, use #if defined(... or " 
                                "#if !defined(.... Better, use " 
                                "PetscDefined()");
+    faults_counter++;
+    // this -> stats_file << "Elifndef, " << faults_counter << "\n";
 
 }
 
+int IfDefRuleCallBack::faults_counter = 0;
 void 
 IfDefRuleCheck::registerPPCallbacks(const SourceManager &SM, Preprocessor *PP, 
                                         Preprocessor *ModuleExpanderPP){
-    IfDefRuleCallBack dd(PP, SM, this);
+    std::ofstream stats_file_stream("IfDefStats.csv");
+    IfDefRuleCallBack dd(stats_file_stream, PP, SM, this);  
     PP -> addPPCallbacks(std::make_unique<IfDefRuleCallBack>(dd));
     
 }
-
-
-
 
 } // namespace petsc
 } // namespace tidy
