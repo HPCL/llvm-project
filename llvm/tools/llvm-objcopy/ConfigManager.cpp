@@ -60,7 +60,9 @@ static const opt::OptTable::Info ObjcopyInfoTable[] = {
 
 class ObjcopyOptTable : public opt::OptTable {
 public:
-  ObjcopyOptTable() : OptTable(ObjcopyInfoTable) {}
+  ObjcopyOptTable() : OptTable(ObjcopyInfoTable) {
+    setGroupedShortOptions(true);
+  }
 };
 
 enum InstallNameToolID {
@@ -164,7 +166,7 @@ static const opt::OptTable::Info StripInfoTable[] = {
 
 class StripOptTable : public opt::OptTable {
 public:
-  StripOptTable() : OptTable(StripInfoTable) {}
+  StripOptTable() : OptTable(StripInfoTable) { setGroupedShortOptions(true); }
 };
 
 } // namespace
@@ -459,7 +461,7 @@ static void printHelp(const opt::OptTable &OptTable, raw_ostream &OS,
     HelpText = " [options] input";
     break;
   }
-  OptTable.PrintHelp(OS, (ToolName + HelpText).str().c_str(),
+  OptTable.printHelp(OS, (ToolName + HelpText).str().c_str(),
                      (ToolName + " tool").str().c_str());
   // TODO: Replace this with libOption call once it adds extrahelp support.
   // The CommandLine library has a cl::extrahelp class to support this,

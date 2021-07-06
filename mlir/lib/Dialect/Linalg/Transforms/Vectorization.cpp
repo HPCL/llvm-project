@@ -702,7 +702,7 @@ struct GenericPadTensorOpVectorizationPattern
     SmallVector<int64_t> staticSizes;
     for (unsigned dim = 0; dim < resultType.getRank(); ++dim) {
       if (resultType.isDynamicDim(dim)) {
-        auto srcSize = rewriter.createOrFold<memref::DimOp>(
+        auto srcSize = rewriter.createOrFold<tensor::DimOp>(
             padOp.getLoc(), padOp.source(), dim);
         // Add low and high padding value.
         auto plusLow = rewriter.createOrFold<AddIOp>(
@@ -732,7 +732,7 @@ struct GenericPadTensorOpVectorizationPattern
     SmallVector<OpFoldResult> srcSizes;
     for (unsigned dim = 0; dim < sourceType.getRank(); ++dim) {
       if (sourceType.isDynamicDim(dim)) {
-        srcSizes.push_back(rewriter.createOrFold<memref::DimOp>(
+        srcSizes.push_back(rewriter.createOrFold<tensor::DimOp>(
             padOp.getLoc(), padOp.source(), dim));
       } else {
         srcSizes.push_back(rewriter.getIndexAttr(sourceType.getDimSize(dim)));
@@ -814,8 +814,8 @@ struct GenericPadTensorOpVectorizationPattern
         readInBounds.push_back(false);
         // Write is out-of-bounds if low padding > 0.
         writeInBounds.push_back(
-            isEqualConstantIntOrValue(padOp.getMixedLowPad()[i],
-                                      rewriter.getIndexAttr(0)));
+            getConstantIntValue(padOp.getMixedLowPad()[i]) ==
+            static_cast<int64_t>(0));
       } else {
         // Neither source nor result dim of padOp is static. Cannot vectorize
         // the copy.
@@ -1098,9 +1098,9 @@ struct PadTensorOpVectorizationWithInsertSlicePattern
     SmallVector<int64_t> expectedSizes(tensorRank - vecRank, 1);
     expectedSizes.append(vecType.getShape().begin(), vecType.getShape().end());
     if (!llvm::all_of(
-            llvm::zip(insertOp.getMixedSizes(), expectedSizes),
-            [](auto it) { return isEqualConstantInt(std::get<0>(it),
-                                                    std::get<1>(it)); }))
+            llvm::zip(insertOp.getMixedSizes(), expectedSizes), [](auto it) {
+              return getConstantIntValue(std::get<0>(it)) == std::get<1>(it);
+            }))
       return failure();
 
     // Generate TransferReadOp: Read entire source tensor and add high padding.
