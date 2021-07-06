@@ -937,7 +937,7 @@ static void buildFrameDebugInfo(Function &F, coro::Shape &Shape,
   unsigned LineNum = PromiseDIVariable->getLine();
 
   DICompositeType *FrameDITy = DBuilder.createStructType(
-      PromiseDIScope, "__coro_frame_ty", DFile, LineNum, Shape.FrameSize * 8,
+      DIS, "__coro_frame_ty", DFile, LineNum, Shape.FrameSize * 8,
       Shape.FrameAlign.value() * 8, llvm::DINode::FlagArtificial, nullptr,
       llvm::DINodeArray());
   StructType *FrameTy = Shape.FrameTy;
@@ -1031,8 +1031,7 @@ static void buildFrameDebugInfo(Function &F, coro::Shape &Shape,
       Name = NameCache[Index].str();
       DITy = TyCache[Index];
     } else {
-      DITy = solveDIType(DBuilder, Ty, Layout, PromiseDIScope, LineNum,
-                         DITypeCache);
+      DITy = solveDIType(DBuilder, Ty, Layout, FrameDITy, LineNum, DITypeCache);
       assert(DITy && "SolveDIType shouldn't return nullptr.\n");
       Name = DITy->getName().str();
       Name += "_" + std::to_string(UnknownTypeNum);
@@ -1040,8 +1039,8 @@ static void buildFrameDebugInfo(Function &F, coro::Shape &Shape,
     }
 
     Elements.push_back(DBuilder.createMemberType(
-        PromiseDIScope, Name, DFile, LineNum, SizeInBits, AlignInBits,
-        OffsetInBits, llvm::DINode::FlagArtificial, DITy));
+        FrameDITy, Name, DFile, LineNum, SizeInBits, AlignInBits, OffsetInBits,
+        llvm::DINode::FlagArtificial, DITy));
   }
 
   DBuilder.replaceArrays(FrameDITy, DBuilder.getOrCreateArray(Elements));
@@ -1840,6 +1839,24 @@ static void rewritePHIsForCleanupPad(BasicBlock *CleanupPadBB,
   }
 }
 
+static void cleanupSinglePredPHIs(Function &F) {
+  SmallVector<PHINode *, 32> Worklist;
+  for (auto &BB : F) {
+    for (auto &Phi : BB.phis()) {
+      if (Phi.getNumIncomingValues() == 1) {
+        Worklist.push_back(&Phi);
+      } else
+        break;
+    }
+  }
+  while (!Worklist.empty()) {
+    auto *Phi = Worklist.back();
+    Worklist.pop_back();
+    auto *OriginalValue = Phi->getIncomingValue(0);
+    Phi->replaceAllUsesWith(OriginalValue);
+  }
+}
+
 static void rewritePHIs(BasicBlock &BB) {
   // For every incoming edge we will create a block holding all
   // incoming values in a single PHI nodes.
@@ -1947,11 +1964,16 @@ static void rewriteMaterializableInstructions(IRBuilder<> &IRB,
     for (Instruction *U : E.second) {
       // If we have not seen this block, materialize the value.
       if (CurrentBlock != U->getParent()) {
-        CurrentBlock = U->getParent();
+
+        bool IsInCoroSuspendBlock = isa<AnyCoroSuspendInst>(U);
+        CurrentBlock = IsInCoroSuspendBlock
+                           ? U->getParent()->getSinglePredecessor()
+                           : U->getParent();
         CurrentMaterialization = cast<Instruction>(Def)->clone();
         CurrentMaterialization->setName(Def->getName());
         CurrentMaterialization->insertBefore(
-            &*CurrentBlock->getFirstInsertionPt());
+            IsInCoroSuspendBlock ? CurrentBlock->getTerminator()
+                                 : &*CurrentBlock->getFirstInsertionPt());
       }
       if (auto *PN = dyn_cast<PHINode>(U)) {
         assert(PN->getNumIncomingValues() == 1 &&
@@ -2583,6 +2605,10 @@ void coro::buildCoroutineFrame(Function &F, Shape &Shape) {
       splitAround(Call, "MustTailCall.Before.CoroEnd");
     }
   }
+
+  // Later code makes structural assumptions about single predecessors phis e.g
+  // that they are not live accross a suspend point.
+  cleanupSinglePredPHIs(F);
 
   // Transforms multi-edge PHI Nodes, so that any value feeding into a PHI will
   // never has its definition separated from the PHI by the suspend point.
