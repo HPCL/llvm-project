@@ -142,16 +142,16 @@ set(files
   __iterator/front_insert_iterator.h
   __iterator/incrementable_traits.h
   __iterator/insert_iterator.h
-  __iterator/istreambuf_iterator.h
   __iterator/istream_iterator.h
-  __iterator/iterator.h
-  __iterator/iterator_traits.h
+  __iterator/istreambuf_iterator.h
   __iterator/iter_move.h
   __iterator/iter_swap.h
+  __iterator/iterator_traits.h
+  __iterator/iterator.h
   __iterator/move_iterator.h
   __iterator/next.h
-  __iterator/ostreambuf_iterator.h
   __iterator/ostream_iterator.h
+  __iterator/ostreambuf_iterator.h
   __iterator/prev.h
   __iterator/projected.h
   __iterator/readable_traits.h
@@ -184,6 +184,7 @@ set(files
   __ranges/access.h
   __ranges/all.h
   __ranges/concepts.h
+  __ranges/copyable_box.h
   __ranges/data.h
   __ranges/drop_view.h
   __ranges/empty_view.h
@@ -193,6 +194,7 @@ set(files
   __ranges/ref_view.h
   __ranges/size.h
   __ranges/subrange.h
+  __ranges/transform_view.h
   __ranges/view_interface.h
   __split_buffer
   __std_stream
@@ -236,6 +238,7 @@ set(files
   __utility/rel_ops.h
   __utility/swap.h
   __utility/to_underlying.h
+  __variant/monostate.h
   algorithm
   any
   array

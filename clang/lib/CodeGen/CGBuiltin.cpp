@@ -17728,11 +17728,6 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
     Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_demote_zero);
     return Builder.CreateCall(Callee, Vec);
   }
-  case WebAssembly::BI__builtin_wasm_promote_low_f32x4_f64x2: {
-    Value *Vec = EmitScalarExpr(E->getArg(0));
-    Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_promote_low);
-    return Builder.CreateCall(Callee, Vec);
-  }
   case WebAssembly::BI__builtin_wasm_load32_zero: {
     Value *Ptr = EmitScalarExpr(E->getArg(0));
     Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_load32_zero);
@@ -18062,6 +18057,7 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
     Ops.push_back(EmitScalarExpr(E->getArg(i)));
 
   Intrinsic::ID ID = Intrinsic::not_intrinsic;
+  unsigned NF = 1;
 
   // Required for overloaded intrinsics.
   llvm::SmallVector<llvm::Type *, 2> IntrinsicTypes;

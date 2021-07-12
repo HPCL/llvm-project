@@ -138,11 +138,32 @@ class Function;
 
 /// Abstract Attribute helper functions.
 namespace AA {
+/// Return true if \p V is a valid value in \p Scope, that is a constant or an
+/// instruction/argument of \p Scope.
+bool isValidInScope(const Value &V, const Function *Scope);
+
+/// Return true if \p V is a valid value at position \p CtxI, that is a
+/// constant, an argument of the same function as \p CtxI, or an instruction in
+/// that function that dominates \p CtxI.
+bool isValidAtPosition(const Value &V, const Instruction &CtxI,
+                       InformationCache &InfoCache);
+
 /// Try to convert \p V to type \p Ty without introducing new instructions. If
 /// this is not possible return `nullptr`. Note: this function basically knows
 /// how to cast various constants.
 Value *getWithType(Value &V, Type &Ty);
 
+/// Return the combination of \p A and \p B such that the result is a possible
+/// value of both. \p B is potentially casted to match the type \p Ty or the
+/// type of \p A if \p Ty is null.
+///
+/// Examples:
+///        X + none  => X
+/// not_none + undef => not_none
+///          V1 + V2 => nullptr
+Optional<Value *>
+combineOptionalValuesInAAValueLatice(const Optional<Value *> &A,
+                                     const Optional<Value *> &B, Type *Ty);
 } // namespace AA
 
 /// The value passed to the line option that defines the maximal initialization
@@ -1414,12 +1435,16 @@ struct Attributor {
   /// uses should be changed too.
   bool changeValueAfterManifest(Value &V, Value &NV,
                                 bool ChangeDroppable = true) {
-    bool Changed = false;
-    for (auto &U : V.uses())
-      if (ChangeDroppable || !U.getUser()->isDroppable())
-        Changed |= changeUseAfterManifest(U, NV);
-
-    return Changed;
+    auto &Entry = ToBeChangedValues[&V];
+    Value *&CurNV = Entry.first;
+    if (CurNV && (CurNV->stripPointerCasts() == NV.stripPointerCasts() ||
+                  isa<UndefValue>(CurNV)))
+      return false;
+    assert((!CurNV || CurNV == &NV || isa<UndefValue>(NV)) &&
+           "Value replacement was registered twice with different values!");
+    CurNV = &NV;
+    Entry.second = ChangeDroppable;
+    return true;
   }
 
   /// Record that \p I is to be replaced with `unreachable` after information
@@ -1462,6 +1487,12 @@ struct Attributor {
                                          bool &UsedAssumedInformation) {
     return getAssumedSimplified(IRP, &AA, UsedAssumedInformation);
   }
+  Optional<Value *> getAssumedSimplified(const Value &V,
+                                         const AbstractAttribute &AA,
+                                         bool &UsedAssumedInformation) {
+    return getAssumedSimplified(IRPosition::value(V), AA,
+                                UsedAssumedInformation);
+  }
 
   /// Register \p CB as a simplification callback.
   /// `Attributor::getAssumedSimplified` will use these callbacks before
@@ -1488,6 +1519,12 @@ private:
                                          bool &UsedAssumedInformation);
 
 public:
+  /// Translate \p V from the callee context into the call site context.
+  Optional<Value *>
+  translateArgumentToCallSiteContent(Optional<Value *> V, CallBase &CB,
+                                     const AbstractAttribute &AA,
+                                     bool &UsedAssumedInformation);
+
   /// Return true if \p AA (or its context instruction) is assumed dead.
   ///
   /// If \p LivenessAA is not provided it is queried.
@@ -1698,17 +1735,21 @@ public:
   bool checkForAllInstructions(function_ref<bool(Instruction &)> Pred,
                                const AbstractAttribute &QueryingAA,
                                const ArrayRef<unsigned> &Opcodes,
-                               bool CheckBBLivenessOnly = false);
+                               bool CheckBBLivenessOnly = false,
+                               bool CheckPotentiallyDead = false);
 
   /// Check \p Pred on all call-like instructions (=CallBased derived).
   ///
   /// See checkForAllCallLikeInstructions(...) for more information.
   bool checkForAllCallLikeInstructions(function_ref<bool(Instruction &)> Pred,
-                                       const AbstractAttribute &QueryingAA) {
+                                       const AbstractAttribute &QueryingAA,
+                                       bool CheckBBLivenessOnly = false,
+                                       bool CheckPotentiallyDead = false) {
     return checkForAllInstructions(Pred, QueryingAA,
                                    {(unsigned)Instruction::Invoke,
                                     (unsigned)Instruction::CallBr,
-                                    (unsigned)Instruction::Call});
+                                    (unsigned)Instruction::Call},
+                                   CheckBBLivenessOnly, CheckPotentiallyDead);
   }
 
   /// Check \p Pred on all Read/Write instructions.
@@ -1874,6 +1915,10 @@ private:
   /// Uses we replace with a new value after manifest is done. We will remove
   /// then trivially dead instructions as well.
   DenseMap<Use *, Value *> ToBeChangedUses;
+
+  /// Values we replace with a new value after manifest is done. We will remove
+  /// then trivially dead instructions as well.
+  DenseMap<Value *, std::pair<Value *, bool>> ToBeChangedValues;
 
   /// Instructions we replace with `unreachable` insts after manifest is done.
   SmallDenseSet<WeakVH, 16> ToBeChangedToUnreachableInsts;
@@ -2631,7 +2676,6 @@ struct AAReturnedValues
   virtual llvm::iterator_range<const_iterator> returned_values() const = 0;
 
   virtual size_t getNumReturnValues() const = 0;
-  virtual const SmallSetVector<CallBase *, 4> &getUnresolvedCalls() const = 0;
 
   /// Create an abstract attribute view for the position \p IRP.
   static AAReturnedValues &createForPosition(const IRPosition &IRP,
@@ -3458,9 +3502,6 @@ struct AAHeapToStack : public StateWrapper<BooleanState, AbstractAttribute> {
 
   /// Returns true if HeapToStack conversion is assumed to be possible.
   virtual bool isAssumedHeapToStack(CallBase &CB) const = 0;
-
-  /// Returns true if HeapToStack conversion is known to be possible.
-  virtual bool isKnownHeapToStack(CallBase &CB) const = 0;
 
   /// Create an abstract attribute view for the position \p IRP.
   static AAHeapToStack &createForPosition(const IRPosition &IRP, Attributor &A);
